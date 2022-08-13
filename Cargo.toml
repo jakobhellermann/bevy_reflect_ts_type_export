@@ -1,0 +1,12 @@
+[package]
+name = "bevy_ts_type_export"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bevy_reflect = "0.8.0"
+pretty-type-name = "1.0.0"
+
+[dev-dependencies]
+bevy = "0.8.0"
