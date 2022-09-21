@@ -8,6 +8,7 @@ use bevy::{
     time::Stopwatch,
     winit::WinitPlugin,
 };
+use bevy_reflect::TypeRegistration;
 use bevy_ts_type_export::TsTypenameContext;
 use std::{
     borrow::Cow,
@@ -63,7 +64,13 @@ fn main() {
 
     let type_registry = app.world.resource::<AppTypeRegistry>();
     let type_registry = type_registry.read();
-    let mut types: Vec<_> = type_registry
+
+    let context = TsTypenameContext {
+        type_registry: &type_registry,
+        replacements: &replacements,
+    };
+
+    let mut types = type_registry
         .iter()
         .filter(|ty| {
             !replacements.contains_key(&ty.type_id())
@@ -71,24 +78,44 @@ fn main() {
                     .iter()
                     .any(|name| ty.type_name().contains(name))
         })
-        .collect();
-    types.sort_by_key(|ty| ty.type_name());
+        .fold(
+            HashMap::<&str, Vec<&TypeRegistration>>::new(),
+            |mut acc, ty| {
+                let belongs = ty
+                    .type_name()
+                    .split_once("::")
+                    .map(|(a, _)| a)
+                    .unwrap_or("std");
+                acc.entry(belongs).or_default().push(ty);
+                acc
+            },
+        );
 
-    let context = TsTypenameContext {
-        type_registry: &type_registry,
-        replacements: &replacements,
-    };
+    let mut all = String::new();
 
-    let types: String = types
-        .into_iter()
-        .map(|ty| {
-            format!(
-                "{}{}",
-                context.type_definition(ty.type_id()),
-                context.bevy_type_declaration(ty.type_id())
-            )
-        })
-        .collect();
+    for (belongs, types) in types.iter_mut() {
+        types.sort_by_key(|ty| ty.type_name());
 
-    std::fs::write("generated/types.ts", types).unwrap();
+        let definitions: String = types
+            .iter()
+            .map(|ty| context.type_definition(ty.type_id()))
+            .collect();
+        let declarations: String = types
+            .iter()
+            .map(|ty| context.bevy_type_declaration(ty.type_id()))
+            .collect();
+
+        std::fs::write(
+            format!("generated/{belongs}.ts"),
+            format!("{definitions}\n{declarations}"),
+        )
+        .unwrap();
+
+        all.push_str(&format!("// {belongs}\n"));
+        all.push_str(&definitions);
+        all.push_str("\n");
+        all.push_str(&declarations);
+    }
+
+    std::fs::write(format!("generated/all.ts"), format!("{all}\n\nexport {{}}")).unwrap();
 }
