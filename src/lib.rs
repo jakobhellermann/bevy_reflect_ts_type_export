@@ -1,67 +1,73 @@
-use bevy_reflect::{TypeInfo, TypeRegistration};
-use std::fmt::Display;
+use bevy_reflect::{TypeInfo, TypeRegistry, VariantInfo};
+use std::any::TypeId;
+use std::collections::HashMap;
+use std::fmt::Write;
 
-pub struct Type {
-    pub short_name: String,
-    pub type_name: &'static str,
-    pub type_info: &'static TypeInfo,
+pub struct TsTypenameContext<'a> {
+    pub type_registry: &'a TypeRegistry,
+    pub replacements: &'a HashMap<TypeId, &'static str>,
 }
-impl Type {
-    pub fn from_registration(registration: &TypeRegistration) -> Type {
-        Type {
-            short_name: ts_type_name(registration.short_name()),
-            type_name: registration.type_name(),
-            type_info: registration.type_info(),
+impl TsTypenameContext<'_> {
+    fn ts_type_name(&self, type_id: TypeId) -> String {
+        let registration = self.type_registry.get(type_id).unwrap();
+        if let Some(replacement) = self.replacements.get(&type_id) {
+            return replacement.to_string();
         }
-    }
-}
 
-fn strip_infix<'a>(a: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
-    a.strip_prefix(prefix).and_then(|a| a.strip_suffix(suffix))
-}
-
-impl Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.type_info {
-            TypeInfo::Struct(strukt) => {
-                writeln!(f, "type {} = {{", self.short_name)?;
-                for field in (0..strukt.field_len()).map(|i| strukt.field_at(i).unwrap()) {
-                    let ts_name = |a| ts_type_name(&pretty_type_name::pretty_type_name_str(a));
-                    let type_name = field.type_name();
-
-                    let ts_name = if let Some(option) =
-                        strip_infix(type_name, "core::option::Option<", ">")
-                    {
-                        format!("{} | null", ts_name(option))
-                    } else if let Some(vec) = strip_infix(type_name, "alloc::vec::Vec<", ">") {
-                        format!("{}[]", ts_name(vec))
-                    } else {
-                        ts_name(type_name)
-                    };
-
-                    writeln!(f, "    {}: {},", field.name(), ts_name)?;
-                }
-                writeln!(f, "}};")?;
+        match registration.type_info() {
+            TypeInfo::List(info) => return format!("{}[]", self.ts_type_name(info.item_type_id())),
+            TypeInfo::Enum(info) if info.type_name().starts_with("core::option::Option") => {
+                let some = info.variant("Some").unwrap();
+                let inner_type_id = match some {
+                    VariantInfo::Tuple(variant) => variant.field_at(0).unwrap().type_id(),
+                    _ => unreachable!(),
+                };
+                return format!("{} | null", self.ts_type_name(inner_type_id));
             }
-            _ => writeln!(f, "type {} = unknown;", self.short_name)?,
+            _ => {}
         }
-        writeln!(
-            f,
-            "const {name}: BevyType<{name}> = {{ typeName: \"{type_name}\" }};",
-            name = self.short_name,
-            type_name = self.type_name
-        )?;
 
-        Ok(())
+        registration
+            .short_name()
+            .replace(|c: char| !c.is_alphanumeric(), "")
     }
 }
 
-fn ts_type_name(type_name: &str) -> String {
-    let name = type_name.replace(|c: char| !c.is_alphanumeric(), "");
+impl TsTypenameContext<'_> {
+    pub fn type_definition(&self, type_id: TypeId) -> String {
+        let registration = self.type_registry.get(type_id).unwrap();
+        let type_name = self.ts_type_name(type_id);
 
-    if name == "String" {
-        return "string".to_owned();
-    };
+        let mut string = String::new();
+        match registration.type_info() {
+            TypeInfo::Struct(strukt) => {
+                writeln!(&mut string, "type {} = {{", type_name).unwrap();
+                for field in (0..strukt.field_len()).map(|i| strukt.field_at(i).unwrap()) {
+                    writeln!(
+                        &mut string,
+                        "    {}: {},",
+                        field.name(),
+                        self.ts_type_name(field.type_id())
+                    )
+                    .unwrap();
+                }
+                writeln!(&mut string, "}};").unwrap();
+            }
+            _ => {
+                writeln!(&mut string, "type {} = unknown;", type_name).unwrap();
+            }
+        }
+        string
+    }
 
-    name
+    pub fn bevy_type_declaration(&self, type_id: TypeId) -> String {
+        let registration = self.type_registry.get(type_id).unwrap();
+        let type_name = self.ts_type_name(type_id);
+
+        format!(
+            "const {name}: BevyType<{name}> = {{ typeName: \"{type_name}\" }};\n",
+            name = type_name,
+            type_name = registration.type_name(),
+        )
+    }
 }

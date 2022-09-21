@@ -1,15 +1,19 @@
 use bevy::{
     core_pipeline::{clear_color::ClearColorConfig, core_3d::Camera3dDepthLoadOp},
     log::LogPlugin,
+    math::Vec3A,
     prelude::*,
     render::camera::Viewport,
     sprite::Anchor,
     time::Stopwatch,
     winit::WinitPlugin,
 };
-use bevy_reflect::TypeRegistryArc;
-use bevy_ts_type_export::Type;
-use std::time::{Duration, Instant};
+use bevy_ts_type_export::TsTypenameContext;
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 fn main() {
     let mut app = App::new();
@@ -24,40 +28,67 @@ fn main() {
         .register_type::<Duration>()
         .register_type::<Instant>()
         .register_type::<TextSection>()
+        .register_type::<Vec<TextSection>>()
         .register_type::<Viewport>()
         .register_type::<TextAlignment>()
-        .register_type::<TextStyle>();
+        .register_type::<TextStyle>()
+        .register_type::<Cow<'static, str>>()
+        .register_type::<Option<Viewport>>()
+        .register_type::<Vec<Entity>>()
+        .register_type::<Option<Vec2>>()
+        .register_type::<Option<Instant>>()
+        .register_type::<Option<Rect>>()
+        .register_type::<Rect>()
+        .register_type::<Vec3A>();
 
-    let type_registry = app.world.resource::<TypeRegistryArc>();
+    let replacements: HashMap<_, _> = HashMap::from_iter([
+        (std::any::TypeId::of::<f32>(), "number"),
+        (std::any::TypeId::of::<f64>(), "number"),
+        (std::any::TypeId::of::<u8>(), "number"),
+        (std::any::TypeId::of::<u16>(), "number"),
+        (std::any::TypeId::of::<u32>(), "number"),
+        (std::any::TypeId::of::<u64>(), "number"),
+        (std::any::TypeId::of::<u128>(), "number"),
+        (std::any::TypeId::of::<usize>(), "number"),
+        (std::any::TypeId::of::<i8>(), "number"),
+        (std::any::TypeId::of::<i16>(), "number"),
+        (std::any::TypeId::of::<i32>(), "number"),
+        (std::any::TypeId::of::<i64>(), "number"),
+        (std::any::TypeId::of::<i128>(), "number"),
+        (std::any::TypeId::of::<isize>(), "number"),
+        (std::any::TypeId::of::<bool>(), "boolean"),
+        (std::any::TypeId::of::<String>(), "string"),
+        (std::any::TypeId::of::<Cow<'static, str>>(), "string"),
+    ]);
+
+    let type_registry = app.world.resource::<AppTypeRegistry>();
     let type_registry = type_registry.read();
-    let types = type_registry
+    let mut types: Vec<_> = type_registry
         .iter()
-        .map(Type::from_registration)
         .filter(|ty| {
-            ty.type_name.contains("::") && !["alloc::string::String"].contains(&ty.type_name)
-        });
-    let mut types: Vec<_> = types.collect();
-    types.sort_by_key(|ty| ty.type_name);
+            !replacements.contains_key(&ty.type_id())
+                && !["alloc::vec::Vec", "core::option::Option"]
+                    .iter()
+                    .any(|name| ty.type_name().contains(name))
+        })
+        .collect();
+    types.sort_by_key(|ty| ty.type_name());
 
-    println!("{HEADER}");
-    for ty in types {
-        println!("{ty}");
-    }
+    let context = TsTypenameContext {
+        type_registry: &type_registry,
+        replacements: &replacements,
+    };
+
+    let types: String = types
+        .into_iter()
+        .map(|ty| {
+            format!(
+                "{}{}",
+                context.type_definition(ty.type_id()),
+                context.bevy_type_declaration(ty.type_id())
+            )
+        })
+        .collect();
+
+    std::fs::write("generated/types.ts", types).unwrap();
 }
-
-const HEADER: &'static str = r#"type BevyType<T> = { typeName: string };
-type bool = boolean;
-type f32 = number;
-type f64 = number;
-type i8 = number;
-type i16 = number;
-type i32 = number;
-type i64 = number;
-type isize = number;
-type u8 = number;
-type u16 = number;
-type u32 = number;
-type u64 = number;
-type usize = number;
-type Cowstr = String;
-type Vec3A = Vec3;"#;
